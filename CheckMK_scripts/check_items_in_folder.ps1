@@ -1,19 +1,5 @@
-﻿###################################################
-# Check MK Script - check if files left in folder #
-###################################################
-# Made by: Damian Scherl                          #
-# Made at: 27.12.2021                             #
-###################################################
-#            Time Trigger via Check MK            #
-# The Scripts retuns if there is a File in the    #
-# mypath variable Path (Folder)                   #
-###################################################
-# Last change by: Damian Scherl                   #
-# Last change at: 10.01.2022                      #
-###################################################
-
 # User editable variables
-$mypath = 'C:\EEAttachments'
+$mypath = 'C:\mypath\here\'
 $filetype = '*.pdf'
 $timeInMinutesToGoBack = 30
 
