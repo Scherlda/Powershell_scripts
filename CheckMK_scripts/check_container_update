@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Checkmk local check: Docker image up-to-date check for all running containers (Docker Hub public)
+
+set -euo pipefail
+
+emit(){ 
+	local s="$1" svc="$2" txt="$3";
+	echo "${s} \"${svc}\" - ${txt}"; 
+	}
+
+declare -A TOKENS
+
+get_dockerhub_token() {
+  local repo="$1"
+  if [[ -n "${TOKENS[$repo]:-}" ]]; then
+    echo "${TOKENS[$repo]}"
+    return
+  fi
+  local token
+  token="$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull" \
+    | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+  TOKENS["$repo"]="$token"
+  echo "$token"
+}
+
+get_remote_digest_dockerhub() {
+  local repo="$1" tag="$2" token="$3"
+  curl -fsSI \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+    "https://registry-1.docker.io/v2/${repo}/manifests/${tag}" \
+    | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}' | tr -d '\r'
+}
+
+docker ps --format '{{.ID}} {{.Names}}' | while read -r cid cname; do
+  svc="Docker_image_up_to_date_${cname}"
+
+  image="$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)"
+  if [[ -z "$image" ]]; then
+    emit 3 "$svc" "UNKNOWN - cannot inspect container image"
+    continue
+  fi
+
+  local_repodeg="$(docker image inspect -f '{{index .RepoDigests 0}}' "$image" 2>/dev/null || true)"
+  local_digest="${local_repodeg#*@}"
+  if [[ -z "$local_repodeg" || "$local_digest" == "$local_repodeg" ]]; then
+    emit 3 "$svc" "UNKNOWN - no local RepoDigest for '$image' (pull once so RepoDigests exists)"
+    continue
+  fi
+
+  repo="${image%:*}"; tag="${image##*:}"
+  if [[ "$repo" == "$tag" ]]; then tag="latest"; fi
+
+  # Only Docker Hub public repos here; anything with an explicit registry host -> UNKNOWN
+  if [[ "$repo" == *.*/* ]]; then
+    emit 3 "$svc" "UNKNOWN - registry not Docker Hub: ${repo}:${tag}"
+    continue
+  fi
+  if [[ "$repo" != */* ]]; then repo="library/$repo"; fi
+
+  token="$(get_dockerhub_token "$repo" || true)"
+  if [[ -z "$token" ]]; then
+    emit 3 "$svc" "UNKNOWN - cannot get Docker Hub token for ${repo}"
+    continue
+  fi
+
+  remote_digest="$(get_remote_digest_dockerhub "$repo" "$tag" "$token" || true)"
+  if [[ -z "$remote_digest" ]]; then
+    emit 3 "$svc" "UNKNOWN - cannot read remote digest for ${repo}:${tag}"
+    continue
+  fi
+
+  if [[ "$local_digest" == "$remote_digest" ]]; then
+    emit 0 "$svc" "OK - up-to-date (${repo}:${tag})"
+  else
+    emit 1 "$svc" "WARN - update available (${repo}:${tag})"
+  fi
+done
+
